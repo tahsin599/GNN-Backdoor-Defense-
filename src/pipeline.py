@@ -215,6 +215,9 @@ def run_pipeline(
                 server_gradients=server_gradients,
                 poison_nodes=poison_nodes
             )
+            backdoor_attack.best_delta_ever = backdoor_attack.delta.clone()
+            backdoor_attack.best_asr_ever = asr  
+            backdoor_attack.best_epoch_ever = epoch
         
         # ============================================
         # STEP 5: Evaluation and monitoring
@@ -243,13 +246,7 @@ def run_pipeline(
                 asr = attack_success_rate(logits_test[test_mask], target_labels_test, target_class)
                 asr_history.append(asr)
                 
-                if asr > backdoor_attack.best_asr_ever:
-                    backdoor_attack.best_delta_ever = backdoor_attack.delta.clone()
-                    backdoor_attack.best_asr_ever = asr
-                    backdoor_attack.best_epoch_ever = epoch
-                    print(f"  New best ASR: {asr:.4f}")
-                else:
-                    print(f"  Current ASR: {asr:.4f}")
+                
             
             partyA.train()
             partyB.train()
