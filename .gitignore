@@ -1,0 +1,70 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.env/
+.envrc/
+
+# =========================
+# PyTorch / PyG
+# =========================
+*.pt
+*.pth
+*.ckpt
+
+# Torch / PyG cache
+.cache/
+torch_geometric/
+pyg/
+
+# =========================
+# Datasets (DO NOT COMMIT)
+# =========================
+data/Cora/
+data/CiteSeer/
+data/PubMed/
+data/ogbn*/
+data/raw/
+data/processed/
+data/vertical_split/
+
+# =========================
+# Reports / Outputs
+# =========================
+report/
+logs/
+runs/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# OS / Editors
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# Experiment Artifacts
+# =========================
+*.log
+*.out
+*.err
+*.tmp
+
+# =========================
+# Misc
+# =========================
+*.swp
+*.bak
+*.zip
+*.tar.gz

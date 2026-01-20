@@ -1,0 +1,16 @@
+# PyTorch core
+torch==2.0.0
+torchvision
+torchaudio
+
+# Scientific stack
+numpy<2
+scipy
+scikit-learn
+pandas
+tqdm
+pyyaml
+typing-extensions
+
+# PyTorch Geometric (pure Python wrapper only)
+torch-geometric
