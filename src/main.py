@@ -31,25 +31,30 @@ def main():
 
     # Vertical Split
     num_features = X.size(1)
-    XA_dim = max(1, num_features // 2)
-    XB_dim = max(1, num_features - XA_dim)
+    XA_dim = num_features // 3
+    XB_dim = num_features // 3
+    XC_dim = num_features - XA_dim - XB_dim
 
     XA = X[:, :XA_dim]
-    XB = X[:, XA_dim:]
+    XB = X[:, XA_dim:XA_dim + XB_dim]
+    XC = X[:, XA_dim + XB_dim:]
     
     print(f"\nVertical Split:")
     print(f"  Party A features: {XA_dim} ({XA.shape})")
     print(f"  Party B features: {XB_dim} ({XB.shape})")
+    print(f"  Party C features: {XC_dim} ({XC.shape})")
 
     # Model Parameters
     partyA_hidden = 64
     partyB_hidden = 64
+    partyC_hidden = 64
     
     # Initialize Models
     print(f"\nInitializing Models:")
     partyA = LocalGAT(in_dim=XA_dim, hidden=partyA_hidden).to(device)
     partyB = LocalGAT(in_dim=XB_dim, hidden=partyB_hidden).to(device)
-    server = Server(partyA_hidden + partyB_hidden, num_classes).to(device)
+    partyC = LocalGAT(in_dim=XC_dim, hidden=partyC_hidden).to(device)
+    server = Server(partyA_hidden + partyB_hidden + partyC_hidden, num_classes).to(device)
 
     # Attack Parameters with Backdoor Retention
     print(f"\nBVG Attack Configuration:")
@@ -68,9 +73,11 @@ def main():
     baseline_acc, clean_acc, attack_acc, asr, trigger = run_pipeline(
         partyA=partyA,
         partyB=partyB,
+        partyC=partyC,
         server=server,
         XA=XA,
         XB=XB,
+        XC=XC,
         edge_index=edge_index,
         y=y,
         train_mask=train_mask,

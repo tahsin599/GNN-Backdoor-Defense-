@@ -54,7 +54,7 @@ pip install torch torchvision torchaudio
 # Install project requirements
 # -------------------------
 echo "Installing project dependencies..."
-pip install -r requirements.txt
+pip install --no-cache-dir -r requirements.txt
 
 # -------------------------
 # Create report directory

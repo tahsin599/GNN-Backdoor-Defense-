@@ -4,8 +4,8 @@ from utils.metrics import accuracy, attack_success_rate
 from attack.backdoor import VFGNNAttack
 
 def run_pipeline(
-    partyA, partyB, server,
-    XA, XB, edge_index, y,
+    partyA, partyB, partyC, server,
+    XA, XB, XC, edge_index, y,
     train_mask, test_mask,
     target_class=1,
     poison_ratio=0.05,
@@ -19,6 +19,7 @@ def run_pipeline(
     # Move data to device
     XA = XA.to(device)
     XB = XB.to(device)
+    XC = XC.to(device)
     edge_index = edge_index.to(device)
     y = y.to(device)
     train_mask = train_mask.to(device)
@@ -33,14 +34,16 @@ def run_pipeline(
     
     partyA_base = type(partyA)(XA.size(1)).to(device)
     partyB_base = type(partyB)(XB.size(1)).to(device)
+    partyC_base = type(partyC)(XC.size(1)).to(device)
     server_base = type(server)(
-        input_dim=partyA_base.gat2.out_channels + partyB_base.gat2.out_channels,
+        input_dim=partyA_base.gat2.out_channels + partyB_base.gat2.out_channels + partyC_base.gat2.out_channels,
         num_classes=server.num_classes
     ).to(device)
 
     optimizer_base = torch.optim.Adam(
         list(partyA_base.parameters()) +
         list(partyB_base.parameters()) +
+        list(partyC_base.parameters()) +
         list(server_base.parameters()),
         lr=0.01,
         weight_decay=5e-4
@@ -49,12 +52,14 @@ def run_pipeline(
     for epoch in range(epochs):
         partyA_base.train()
         partyB_base.train()
+        partyC_base.train()
         server_base.train()
         optimizer_base.zero_grad()
 
         hA = partyA_base(XA, edge_index)
         hB = partyB_base(XB, edge_index)
-        h = torch.cat([hA, hB], dim=1)
+        hC = partyC_base(XC, edge_index)
+        h = torch.cat([hA, hB, hC], dim=1)
         logits = server_base(h)
         
         loss = F.cross_entropy(logits[train_mask], y[train_mask])
@@ -64,11 +69,13 @@ def run_pipeline(
     # Baseline evaluation
     partyA_base.eval()
     partyB_base.eval()
+    partyC_base.eval()
     server_base.eval()
     with torch.no_grad():
         hA = partyA_base(XA, edge_index)
         hB = partyB_base(XB, edge_index)
-        logits = server_base(torch.cat([hA, hB], dim=1))
+        hC = partyC_base(XC, edge_index)
+        logits = server_base(torch.cat([hA, hB, hC], dim=1))
         baseline_acc = accuracy(logits[test_mask], y[test_mask])
     
     print(f"\nBaseline Accuracy: {baseline_acc:.4f}")
@@ -98,6 +105,7 @@ def run_pipeline(
     # Optimizers (separate for bi-level optimization)
     optimizer_A = torch.optim.Adam(partyA.parameters(), lr=0.01, weight_decay=5e-4)
     optimizer_B = torch.optim.Adam(partyB.parameters(), lr=0.01, weight_decay=5e-4)
+    optimizer_C = torch.optim.Adam(partyC.parameters(), lr=0.01, weight_decay=5e-4)
     optimizer_server = torch.optim.Adam(server.parameters(), lr=0.01, weight_decay=5e-4)
     
     # Save initial model state for BR
@@ -114,6 +122,7 @@ def run_pipeline(
     for epoch in range(epochs):
         partyA.train()
         partyB.train()
+        partyC.train()
         server.train()
         
         # ============================================
@@ -152,12 +161,14 @@ def run_pipeline(
         
         optimizer_A.zero_grad()
         optimizer_B.zero_grad()
+        optimizer_C.zero_grad()
         optimizer_server.zero_grad()
         
         # Clean forward pass
         hA_clean = partyA(XA, edge_index)
         hB_clean = partyB(XB, edge_index)
-        h_clean = torch.cat([hA_clean, hB_clean], dim=1)
+        hC_clean = partyC(XC, edge_index)
+        h_clean = torch.cat([hA_clean, hB_clean, hC_clean], dim=1)
         logits_clean = server(h_clean)
         
         # Clean loss (first part of Eq. 5)
@@ -171,7 +182,8 @@ def run_pipeline(
         # Backdoor forward pass
         hA_poisoned = partyA(XA_poisoned, edge_index)
         hB_poisoned = partyB(XB, edge_index)
-        h_poisoned = torch.cat([hA_poisoned, hB_poisoned], dim=1)
+        hC_poisoned = partyC(XC, edge_index)
+        h_poisoned = torch.cat([hA_poisoned, hB_poisoned, hC_poisoned], dim=1)
         logits_poisoned = server(h_poisoned)
         
         # Backdoor loss (second part of Eq. 5)
@@ -199,6 +211,7 @@ def run_pipeline(
         # Update model parameters (inner loop optimization)
         optimizer_A.step()
         optimizer_B.step()
+        optimizer_C.step()
         optimizer_server.step()
         
         # ============================================
@@ -231,6 +244,7 @@ def run_pipeline(
             # Evaluate ASR
             partyA.eval()
             partyB.eval()
+            partyC.eval()
             server.eval()
             with torch.no_grad():
                 # Apply trigger to test nodes
@@ -239,7 +253,8 @@ def run_pipeline(
                 
                 HA_test = partyA(XA_triggered, edge_index)
                 HB_test = partyB(XB, edge_index)
-                H_test = torch.cat([HA_test, HB_test], dim=1)
+                HC_test = partyC(XC, edge_index)
+                H_test = torch.cat([HA_test, HB_test, HC_test], dim=1)
                 logits_test = server(H_test)
                 
                 target_labels_test = torch.full_like(y[test_mask], target_class)
@@ -250,6 +265,7 @@ def run_pipeline(
             
             partyA.train()
             partyB.train()
+            partyC.train()
             server.train()
 
     # =====================================================
@@ -261,6 +277,7 @@ def run_pipeline(
     
     partyA.eval()
     partyB.eval()
+    partyC.eval()
     server.eval()
 
     # Get best trigger
@@ -283,7 +300,8 @@ def run_pipeline(
         # Clean Accuracy
         HA_clean = partyA(XA, edge_index)
         HB_clean = partyB(XB, edge_index)
-        H_clean = torch.cat([HA_clean, HB_clean], dim=1)
+        HC_clean = partyC(XC, edge_index)
+        H_clean = torch.cat([HA_clean, HB_clean, HC_clean], dim=1)
         logits_clean = server(H_clean)
         clean_acc = accuracy(logits_clean[test_mask], y[test_mask])
         print(f"\nClean Accuracy: {clean_acc:.4f}")
@@ -294,7 +312,8 @@ def run_pipeline(
         
         HA_attack = partyA(XA_triggered, edge_index)
         HB_attack = partyB(XB, edge_index)
-        H_attack = torch.cat([HA_attack, HB_attack], dim=1)
+        HC_attack = partyC(XC, edge_index)
+        H_attack = torch.cat([HA_attack, HB_attack, HC_attack], dim=1)
         logits_attack = server(H_attack)
         
         attack_acc = accuracy(logits_attack[test_mask], y[test_mask])
