@@ -68,3 +68,6 @@ Thumbs.db
 *.bak
 *.zip
 *.tar.gz
+
+.md 
+vflip.txt

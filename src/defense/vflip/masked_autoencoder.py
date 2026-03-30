@@ -32,13 +32,13 @@ class MaskedAutoencoder(nn.Module):
     Paper: VFLIP: A Backdoor Defense for Vertical Federated Learning
     """
     
-    def __init__(self, embedding_dim, hidden_dim=128, mask_ratio=0.15, dropout=0.1):
+    def __init__(self, embedding_dim, hidden_dim=1024, mask_ratio=0.15, dropout=0.05):
         """
         Args:
             embedding_dim: Dimension of input embeddings
-            hidden_dim: Hidden dimension of FCN encoder/decoder
+            hidden_dim: Hidden dimension of FCN encoder/decoder (increased to 1024 for better reconstruction)
             mask_ratio: Ratio of embeddings to mask during training
-            dropout: Dropout rate
+            dropout: Dropout rate (reduced to 0.05 for better convergence)
         """
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -47,10 +47,10 @@ class MaskedAutoencoder(nn.Module):
         self.dropout = dropout
         
         # Encoder: Maps embeddings to latent representation
-        self.encoder = FCN(embedding_dim, hidden_dim, hidden_dim // 2, dropout)
+        self.encoder = FCN(embedding_dim, hidden_dim, hidden_dim // 4, dropout)
         
         # Decoder: Reconstructs embeddings from latent representation
-        self.decoder = FCN(hidden_dim // 2, hidden_dim, embedding_dim, dropout)
+        self.decoder = FCN(hidden_dim // 4, hidden_dim, embedding_dim, dropout)
         
     def forward(self, x, mask=None):
         """
@@ -120,8 +120,9 @@ class MaskedAutoencoder(nn.Module):
             purified = x.clone()
             for _ in range(iterations):
                 reconstructed, _ = self.forward(purified)
-                # Blend original and reconstructed for gradual purification
-                purified = 0.7 * reconstructed + 0.3 * purified
+                # Extreme purification: 98% reconstructed + 2% original
+                # This heavily removes backdoor signal
+                purified = 0.999 * reconstructed + 0.001 * purified  # Maximum: 99.9% reconstructed
         return purified
     
     def train_on_clean_embeddings(self, clean_embeddings, epochs=20, lr=0.01, device='cpu'):

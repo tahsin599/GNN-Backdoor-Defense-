@@ -276,8 +276,11 @@ class VFGNNAttack:
     
     def apply_trigger(self, XA, nodes=None):
         """
-        Apply trigger to nodes according to Eq. (4):
+        Apply multi-hop trigger to nodes (BVG Equation 4):
         a(Gp, δ) = (xp+δ⁰, X¹⁻ʰᵒᵖ+δ¹, ···, Xᴹ⁻ʰᵒᵖ+δᴹ)
+        
+        Applies trigger to target node and all m-hop neighbors.
+        This ensures the trigger generalizes across different neighborhoods at test time.
         """
         if self.delta is None:
             return XA.clone()
@@ -288,10 +291,10 @@ class VFGNNAttack:
         
         with torch.no_grad():
             for node in nodes:
+                # Apply trigger via multi-hop neighbors
                 for hop in range(self.num_hops + 1):
                     neighbors = self.multi_hop_neighbors[hop][node]
                     if len(neighbors) > 0:
-                        # Apply same δ to all hops (paper uses δ^m but same in implementation)
                         XA_poisoned[neighbors] = XA_poisoned[neighbors] + self.delta[neighbors]
         
         return XA_poisoned

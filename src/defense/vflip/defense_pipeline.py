@@ -17,7 +17,7 @@ Usage:
 
 import torch
 import torch.nn.functional as F
-from src.utils.metrics import accuracy, attack_success_rate
+from utils.metrics import accuracy, attack_success_rate
 from .vflip_defense import VFLIPDefense
 
 

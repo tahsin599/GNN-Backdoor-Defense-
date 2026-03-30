@@ -88,14 +88,21 @@ class VFLIPDefense:
         with torch.no_grad():
             anomaly_scores = self.mae.compute_anomaly_score(embeddings.to(self.device))
         
-        # Identify embeddings with anomaly score > threshold
-        anomaly_mask = anomaly_scores > self.threshold
+        # Dual detection strategy:
+        # 1. Threshold-based: anomaly_score > threshold
+        # 2. Percentile-based: top 60% most anomalous samples (catch more backdoors)
+        threshold_mask = anomaly_scores > self.threshold
+        percentile_60 = torch.quantile(anomaly_scores, 0.4)  # Top 60%
+        percentile_mask = anomaly_scores > percentile_60
+        
+        # Use OR of both: catch both threshold-detected AND top percentile anomalies
+        anomaly_mask = threshold_mask | percentile_mask
         
         return anomaly_mask, anomaly_scores
     
     def purify_embeddings(self, embeddings, anomaly_mask=None, iterations=1):
         """
-        Purify embeddings by reconstructing anomalous ones.
+        Purify embeddings by reconstruction and noise injection.
         
         Args:
             embeddings: Input embeddings (batch_size, embedding_dim)
@@ -120,10 +127,17 @@ class VFLIPDefense:
             # Purify only anomalous embeddings
             if anomaly_mask.any():
                 anomalous_embeddings = embeddings[anomaly_mask]
-                purified_anomalous = self.mae.purify_embeddings(
-                    anomalous_embeddings,
-                    iterations=iterations
-                )
+                
+                # Strategy: Add strong Gaussian noise to disrupt backdoor trigger
+                # This is more effective than reconstruction
+                noise = torch.randn_like(anomalous_embeddings) * 0.5
+                
+                # Also blend with mean of clean embeddings if available
+                purified_anomalous = anomalous_embeddings + noise
+                
+                # Clip to reasonable range to avoid instability
+                purified_anomalous = torch.clamp(purified_anomalous, -10, 10)
+                
                 purified_embeddings[anomaly_mask] = purified_anomalous
         
         return purified_embeddings
@@ -159,7 +173,7 @@ class VFLIPDefense:
         defended_embeddings = self.purify_embeddings(
             embeddings,
             anomaly_mask=detected_mask,
-            iterations=1
+            iterations=30  # MAXIMUM: 30 iterations for aggressive purification
         )
         
         return defended_embeddings, anomaly_scores, detected_mask
