@@ -427,7 +427,7 @@ def run_pipeline(
     torch.save(results, 'report/paper_attack_results.pt')
     print("\nResults saved to 'report/paper_attack_results.pt'")
 
-    return baseline_acc, clean_acc, attack_acc, asr, best_trigger
+    return baseline_acc, clean_acc, attack_acc, asr, best_trigger,HA_attack,HB_attack,HC_attack
 
 
 def run_vflip_defense_pipeline(

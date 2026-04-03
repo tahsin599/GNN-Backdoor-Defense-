@@ -83,7 +83,7 @@ def collect_all_embeddings(partyA, partyB, partyC, server,
     return embeddings
 
 
-def run_vflip_defense(partyA, partyB, partyC, server,
+def run_vflip_defense(partyA,partyB,partyC,HA, HB, HC, server,
                       XA, XB, XC, edge_index, y,
                       train_mask, test_mask,
                       threshold=2.0,
@@ -140,12 +140,15 @@ def run_vflip_defense(partyA, partyB, partyC, server,
     print("\n" + "-"*60)
     print("Phase 1: Training MAE on clean embeddings")
     print("-"*60)
+
+    embeddings = torch.cat([HA, HB, HC], dim=1)
+    clean_embeddings = embeddings[train_mask]
     
-    clean_embeddings = collect_embeddings_on_clean_data(
-        partyA, partyB, partyC, server,
-        XA, XB, XC, edge_index,
-        train_mask, device
-    )
+    # clean_embeddings = collect_embeddings_on_clean_data(
+    #     partyA, partyB, partyC, server,
+    #     XA, XB, XC, edge_index,
+    #     train_mask, device
+    # )
     
     print(f"Clean embeddings shape: {clean_embeddings.shape}")
     
@@ -160,12 +163,12 @@ def run_vflip_defense(partyA, partyB, partyC, server,
     print("Phase 2: Test set defense evaluation")
     print("-"*60)
     
-    test_embeddings = collect_all_embeddings(
-        partyA, partyB, partyC, server,
-        XA, XB, XC, edge_index, device
-    )
+    # test_embeddings = collect_all_embeddings(
+    #     partyA, partyB, partyC, server,
+    #     XA, XB, XC, edge_index, device
+    # )
     
-    test_embeddings_subset = test_embeddings[test_mask]
+    test_embeddings_subset = embeddings[test_mask]
     
     # Apply defense
     defended_embeddings, anomaly_scores, detected_mask = vflip.defend_on_batch(

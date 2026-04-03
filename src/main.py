@@ -116,14 +116,14 @@ def main(mode='balanced', include_defense=True):
             'epsilon': 0.15,
             'alpha': 0.25,
             'epochs': 500,
-            'similarity_threshold': 0.4,
+            'similarity_threshold': 0.8,
         }
     
     print(f"\n{'='*80}")
     print("Running BVG Attack...")
     print(f"{'='*80}")
     
-    baseline_acc, clean_acc_attack, attack_acc, asr_attack, trigger = run_pipeline(
+    baseline_acc, clean_acc_attack, attack_acc, asr_attack, trigger,HA_Attack,HB_Attack,HC_Attack = run_pipeline(
         partyA=partyA,
         partyB=partyB,
         partyC=partyC,
@@ -184,6 +184,9 @@ def main(mode='balanced', include_defense=True):
             partyA=partyA,
             partyB=partyB,
             partyC=partyC,
+            HA=HA_Attack,
+            HB=HB_Attack,
+            HC=HC_Attack,
             server=server,
             XA=XA,
             XB=XB,
@@ -280,4 +283,4 @@ def main(mode='balanced', include_defense=True):
 
 if __name__ == "__main__":
     # Run balanced attack with defense
-    main(mode='balanced', include_defense=True)
+    main(mode='aggressive', include_defense=True)
