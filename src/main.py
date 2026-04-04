@@ -112,7 +112,7 @@ def main(mode='balanced', include_defense=True):
         print(f"  └─ Expected Results   : Higher ASR but lower clean accuracy")
         
         attack_config = {
-            'poison_ratio': 0.30,
+            'poison_ratio': 0.20,
             'epsilon': 0.15,
             'alpha': 0.25,
             'epochs': 500,
@@ -123,7 +123,7 @@ def main(mode='balanced', include_defense=True):
     print("Running BVG Attack...")
     print(f"{'='*80}")
     
-    baseline_acc, clean_acc_attack, attack_acc, asr_attack, trigger,HA_Attack,HB_Attack,HC_Attack = run_pipeline(
+    baseline_acc, clean_acc_attack, attack_acc, asr_attack, trigger, HA_Attack, HB_Attack, HC_Attack = run_pipeline(
         partyA=partyA,
         partyB=partyB,
         partyC=partyC,
@@ -163,107 +163,86 @@ def main(mode='balanced', include_defense=True):
         print(f"Trigger Norm: {trigger_norm:.4f}")
     
     # =====================================================
-    # PHASE 2: OPTIONAL VFLIP DEFENSE
+    # PHASE 2: OPTIONAL VFLIP DEFENSE (CORRECTED)
     # =====================================================
     if include_defense:
         print("\n" + "="*80)
-        print("PHASE 2: APPLYING VFLIP DEFENSE")
+        print("PHASE 2: APPLYING VFLIP DEFENSE (PAPER IMPLEMENTATION)")
         print("="*80)
         
         print("\n🛡️  VFLIP Defense Configuration:")
-        print(f"  ├─ Anomaly Threshold (ρ)     : 2.0")
-        print(f"  ├─ MAE Training Epochs       : 50")
-        print(f"  ├─ Embedding Purification    : 70% reconstructed + 30% original")
-        print(f"  └─ Defense Strategy          : Two-phase (detection + purification)")
+        print(f"  ├─ Anomaly Threshold Percentile : 95.0%")
+        print(f"  ├─ MAE Training Epochs          : 600")
+        print(f"  ├─ MAE Hidden Dim               : 256")
+        print(f"  └─ Defense Strategy             : Two-phase (identification + purification)")
         
         print(f"\nApplying VFLIP Defense...")
         print(f"{'─'*80}")
         
-        # Apply VFLIP Defense directly
+        # Run VFLIP defense using precomputed HA, HB, HC from the attack
         vflip, defended_embeddings, defense_metrics = run_vflip_defense(
-            partyA=partyA,
+            partyA=partyA,        # kept for signature compatibility (not used)
             partyB=partyB,
             partyC=partyC,
+            server=server,
             HA=HA_Attack,
             HB=HB_Attack,
             HC=HC_Attack,
-            server=server,
-            XA=XA,
+            XA=XA,                # not used in corrected run_vflip_defense
             XB=XB,
             XC=XC,
             edge_index=edge_index,
             y=y,
             train_mask=train_mask,
             test_mask=test_mask,
-            threshold=-1.0,  # EXTREME: Detect more samples than median
-            mae_epochs=600,  # EXTREME: Much longer training for better reconstruction
+            threshold_percentile=95.0,
+            mae_epochs=600,
+            lr1=0.01,
+            lr2=0.01,
             device=device
         )
         
-        print(f"\n🛡️ VFLIP Defense Applied Successfully")
+        print(f"\n✅ VFLIP Defense Applied Successfully")
 
         # =====================================================
-        # PHASE 3: COMPREHENSIVE COMPARISON
+        # PHASE 3: COMPREHENSIVE COMPARISON (UPDATED FOR CORRECT VFLIP)
         # =====================================================
         print("\n" + "="*80)
         print("FINAL RESULTS: ATTACK vs DEFENSE COMPARISON")
         print("="*80)
         
-        # Get defense detection metrics
-        detected_mask, anomaly_scores = vflip.detect_anomalies(defended_embeddings)
-        num_detected = detected_mask.sum().item()
-        detection_rate = num_detected / len(detected_mask)
-        
-        # Calculate accuracy with defense
-        clean_acc_with_defense = defense_metrics.get('clean_acc_with_defense', 0)
-        if clean_acc_with_defense == 0:
-            clean_acc_with_defense = clean_acc_attack - 0.005
-        
-        partyA.eval()
-        partyB.eval()
-        partyC.eval()
-        server.eval()
-        
+        # Get the original test embeddings (before defense) from the attack output
+        # We have HA_Attack, HB_Attack, HC_Attack – concatenate them
         with torch.no_grad():
-            # Compute embeddings for ALL nodes (required for GNN message passing)
-            hA_all = partyA(XA, edge_index)
-            hB_all = partyB(XB, edge_index)
-            hC_all = partyC(XC, edge_index)
-            
-            # Concatenate to get full embeddings
-            all_embeddings_original = torch.cat([hA_all, hB_all, hC_all], dim=1)
-            
-            # Extract test set embeddings
+            all_embeddings_original = torch.cat([HA_Attack, HB_Attack, HC_Attack], dim=1)
             original_test_embeddings = all_embeddings_original[test_mask]
-            
-            # Calculate ASR on original (attacked) embeddings
+        
+        # Use VFLIP to identify malicious parties on the original test embeddings
+        malicious_mask = vflip.identify_malicious_parties(original_test_embeddings)
+        # A sample is considered "detected" if at least one party is malicious
+        detected_mask = malicious_mask.sum(dim=1) > 0
+        detection_rate = detected_mask.float().mean().item()
+        num_detected = detected_mask.sum().item()
+        
+        # Compute ASR on original (attacked) embeddings
+        with torch.no_grad():
             original_outputs = server(original_test_embeddings)
             original_predictions = original_outputs.argmax(dim=1)
             num_triggered_original = (original_predictions == 0).sum().item()
             asr_original = num_triggered_original / len(original_test_embeddings)
             
-            # Calculate ASR with defense
+            # Compute ASR after defense (on purified embeddings)
             defended_outputs = server(defended_embeddings)
             defended_predictions = defended_outputs.argmax(dim=1)
-            
-            # For detected anomalies, replace prediction with non-target class
-            for i in range(len(detected_mask)):
-                if detected_mask[i]:
-                    defended_outputs[i, 0] = defended_outputs[i].min() - 10
-                    defended_predictions[i] = defended_outputs[i].argmax()
-            
             num_triggered_defended = (defended_predictions == 0).sum().item()
             asr_with_defense = num_triggered_defended / len(defended_embeddings)
+            
+            # Compute clean accuracy on defended embeddings
+            test_labels = y[test_mask]
+            defended_accuracy = (defended_predictions == test_labels).sum().item() / len(test_labels)
         
-        # Calculate accuracy metrics
         asr_reduction = asr_original - asr_with_defense
         asr_reduction_pct = (asr_reduction / asr_original * 100) if asr_original > 0 else 0
-        
-        # Calculate accuracy with defended embeddings
-        test_outputs_defended = server(defended_embeddings)
-        defended_predictions_all = test_outputs_defended.argmax(dim=1)
-        test_labels = y[test_mask]
-        defended_accuracy = (defended_predictions_all == test_labels).sum().item() / len(test_labels)
         
         # Print comparison matrix
         print("\n" + "="*90)
@@ -274,7 +253,7 @@ def main(mode='balanced', include_defense=True):
         print(f"{'Baseline Accuracy':<30} | {baseline_acc*100:>19.2f}% | {'-':>20} | {'-':>15}")
         print(f"{'Attack Success Rate (ASR)':<30} | {asr_original*100:>19.2f}% | {asr_with_defense*100:>19.2f}% | {-asr_reduction*100:>14.2f}pp")
         print(f"{'Clean Accuracy (test)':<30} | {clean_acc_attack*100:>19.2f}% | {defended_accuracy*100:>19.2f}% | {(defended_accuracy - clean_acc_attack)*100:>14.2f}pp")
-        print(f"{'Detected Anomalies':<30} | {'-':>20} | {detection_rate*100:>19.1f}% | {'-':>15}")
+        print(f"{'Detected Anomalies (samples)':<30} | {'-':>20} | {detection_rate*100:>19.1f}% | {'-':>15}")
         print("="*90)
         print(f"\nNote: ASR change of {-asr_reduction*100:.2f}pp represents a {asr_reduction_pct:.1f}% relative reduction")
         
@@ -282,5 +261,5 @@ def main(mode='balanced', include_defense=True):
 
 
 if __name__ == "__main__":
-    # Run balanced attack with defense
+    # Run aggressive attack with defense
     main(mode='aggressive', include_defense=True)

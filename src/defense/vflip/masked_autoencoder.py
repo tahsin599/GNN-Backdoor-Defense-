@@ -1,17 +1,18 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 
 class FCN(nn.Module):
-    """Fully Connected Network (FCN) used in MAE encoder and decoder."""
+    """Fully Connected Network used in MAE encoder and decoder."""
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.1):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, output_dim)
         self.dropout = nn.Dropout(dropout)
-        
+
     def forward(self, x):
         x = F.relu(self.fc1(x))
         x = self.dropout(x)
@@ -23,135 +24,108 @@ class FCN(nn.Module):
 
 class MaskedAutoencoder(nn.Module):
     """
-    Masked Autoencoder (MAE) for VFLIP defense.
-    
-    The MAE is trained on clean embeddings and learns to:
-    1. Identify anomalies via reconstruction error
-    2. Purify backdoor-triggered embeddings by reconstruction
-    
-    Paper: VFLIP: A Backdoor Defense for Vertical Federated Learning
+    Masked Autoencoder for VFLIP.
+    Trained with two strategies:
+      - "N-1 to 1": predict one party's embedding from all others.
+      - "1 to 1":   predict one party's embedding from another single party.
     """
-    
-    def __init__(self, embedding_dim, hidden_dim=1024, mask_ratio=0.15, dropout=0.05):
-        """
-        Args:
-            embedding_dim: Dimension of input embeddings
-            hidden_dim: Hidden dimension of FCN encoder/decoder (increased to 1024 for better reconstruction)
-            mask_ratio: Ratio of embeddings to mask during training
-            dropout: Dropout rate (reduced to 0.05 for better convergence)
-        """
+
+    def __init__(self, embedding_dim, party_splits, hidden_dim=256, dropout=0.1):
         super().__init__()
         self.embedding_dim = embedding_dim
-        self.hidden_dim = hidden_dim
-        self.mask_ratio = mask_ratio
-        self.dropout = dropout
-        
-        # Encoder: Maps embeddings to latent representation
-        self.encoder = FCN(embedding_dim, hidden_dim, hidden_dim // 4, dropout)
-        
-        # Decoder: Reconstructs embeddings from latent representation
-        self.decoder = FCN(hidden_dim // 4, hidden_dim, embedding_dim, dropout)
-        
+        self.party_splits = party_splits  # list of (start, end) indices
+        self.num_parties = len(party_splits)
+
+        self.encoder = FCN(embedding_dim, hidden_dim, hidden_dim // 2, dropout)
+        self.decoder = FCN(hidden_dim // 2, hidden_dim, embedding_dim, dropout)
+
+    def apply_block_mask(self, x, mask):
+        """
+        mask: (batch, num_parties) – 1 means keep, 0 means zero out that party's block.
+        """
+        x_masked = x.clone()
+        for p, (start, end) in enumerate(self.party_splits):
+            party_mask = mask[:, p].float().unsqueeze(1)  # (batch, 1)
+            x_masked[:, start:end] = x_masked[:, start:end] * party_mask
+        return x_masked
+
     def forward(self, x, mask=None):
-        """
-        Forward pass through MAE.
-        
-        Args:
-            x: Input embeddings (batch_size, embedding_dim)
-            mask: Binary mask indicating which elements to mask (optional)
-            
-        Returns:
-            reconstructed: Reconstructed embeddings
-            latent: Latent representation
-        """
-        # Encode
-        latent = self.encoder(x)
-        
-        # Decode
+        if mask is None:
+            mask = torch.ones(x.size(0), self.num_parties, device=x.device)
+        x_masked = self.apply_block_mask(x, mask)
+        latent = self.encoder(x_masked)
         reconstructed = self.decoder(latent)
-        
-        return reconstructed, latent
-    
-    def compute_reconstruction_error(self, x):
+        return reconstructed
+
+    def compute_reconstruction_error_on_party(self, x, mask_input, mask_target):
         """
-        Compute reconstruction error for anomaly detection.
-        
-        Args:
-            x: Input embeddings (batch_size, embedding_dim)
-            
-        Returns:
-            error: Reconstruction error per sample (batch_size,)
+        mask_input: (batch, num_parties) – which parties are given to MAE.
+        mask_target: (batch, num_parties) – which parties to compute loss on.
+        Returns MSE per sample over the target block only.
         """
-        reconstructed, _ = self.forward(x)
-        error = torch.mean((x - reconstructed) ** 2, dim=1)
-        return error
-    
-    def compute_anomaly_score(self, x):
-        """
-        Compute anomaly score for backdoor detection.
-        
-        Based on reconstruction error with normalization.
-        
-        Args:
-            x: Input embeddings (batch_size, embedding_dim)
-            
-        Returns:
-            anomaly_score: Normalized anomaly score per sample
-        """
-        error = self.compute_reconstruction_error(x)
-        # Normalize using z-score normalization
-        mean_error = error.mean()
-        std_error = error.std() + 1e-8
-        anomaly_score = (error - mean_error) / std_error
-        return anomaly_score
-    
-    def purify_embeddings(self, x, iterations=1):
-        """
-        Purify embeddings by iterative reconstruction.
-        
-        Args:
-            x: Input embeddings (batch_size, embedding_dim)
-            iterations: Number of purification iterations
-            
-        Returns:
-            purified: Purified embeddings
-        """
-        with torch.no_grad():
-            purified = x.clone()
-            for _ in range(iterations):
-                reconstructed, _ = self.forward(purified)
-                # Extreme purification: 98% reconstructed + 2% original
-                # This heavily removes backdoor signal
-                purified = 0.999 * reconstructed + 0.001 * purified  # Maximum: 99.9% reconstructed
-        return purified
-    
-    def train_on_clean_embeddings(self, clean_embeddings, epochs=20, lr=0.01, device='cpu'):
-        """
-        Train MAE on clean embeddings.
-        
-        Args:
-            clean_embeddings: Clean embeddings for training (n_samples, embedding_dim)
-            epochs: Number of training epochs
-            lr: Learning rate
-            device: Device to use for training
-        """
+        reconstructed = self.forward(x, mask_input)
+        # Build expanded target mask for embedding dimension
+        target_mask_expanded = torch.zeros_like(x)
+        for p, (start, end) in enumerate(self.party_splits):
+            target_mask_expanded[:, start:end] = mask_target[:, p].float().unsqueeze(1)
+        diff = (x - reconstructed) * target_mask_expanded
+        loss_per_sample = (diff ** 2).sum(dim=1) / (target_mask_expanded.sum(dim=1).clamp(min=1))
+        return loss_per_sample
+
+    def train_on_clean_embeddings(self, clean_embeddings, epochs=20,
+                                  lr1=0.01, lr2=0.01, device='cpu'):
         self.to(device)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        criterion = nn.MSELoss()
-        
         clean_embeddings = clean_embeddings.to(device)
-        
+        n = self.num_parties
+
+        optimizer1 = torch.optim.Adam(self.parameters(), lr=lr1)
+        optimizer2 = torch.optim.Adam(self.parameters(), lr=lr2)
+
         for epoch in range(epochs):
-            self.train()
-            optimizer.zero_grad()
-            
-            reconstructed, _ = self.forward(clean_embeddings)
-            loss = criterion(reconstructed, clean_embeddings)
-            
-            loss.backward()
-            optimizer.step()
-            
+            perm = torch.randperm(clean_embeddings.size(0))
+            embeddings_shuffled = clean_embeddings[perm]
+            batch = embeddings_shuffled  # full batch for simplicity
+
+            # ---- N-1 to 1 ----
+            optimizer1.zero_grad()
+            loss_n1 = 0.0
+            for h in batch:
+                i = np.random.randint(0, n)
+                mask_input = torch.ones(n, device=device)
+                mask_input[i] = 0.0
+                mask_input = mask_input.unsqueeze(0)
+                mask_target = torch.zeros(n, device=device)
+                mask_target[i] = 1.0
+                mask_target = mask_target.unsqueeze(0)
+                loss_i = self.compute_reconstruction_error_on_party(
+                    h.unsqueeze(0), mask_input, mask_target
+                )
+                loss_n1 += loss_i
+            loss_n1 /= len(batch)
+            loss_n1.backward()
+            optimizer1.step()
+
+            # ---- 1 to 1 ----
+            optimizer2.zero_grad()
+            loss_11 = 0.0
+            for h in batch:
+                parties = np.random.choice(n, size=2, replace=False)
+                i, j = parties[0], parties[1]
+                mask_input = torch.zeros(n, device=device)
+                mask_input[j] = 1.0
+                mask_input = mask_input.unsqueeze(0)
+                mask_target = torch.zeros(n, device=device)
+                mask_target[i] = 1.0
+                mask_target = mask_target.unsqueeze(0)
+                loss_ij = self.compute_reconstruction_error_on_party(
+                    h.unsqueeze(0), mask_input, mask_target
+                )
+                loss_11 += loss_ij
+            loss_11 /= len(batch)
+            loss_11.backward()
+            optimizer2.step()
+
             if (epoch + 1) % 5 == 0:
-                print(f"  MAE Epoch {epoch+1}/{epochs}, Loss: {loss.item():.6f}")
-        
+                print(f"MAE Epoch {epoch+1}/{epochs} | N-1→1 loss: {loss_n1.item():.6f} | 1→1 loss: {loss_11.item():.6f}")
+
         self.eval()

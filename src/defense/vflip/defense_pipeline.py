@@ -83,136 +83,122 @@ def collect_all_embeddings(partyA, partyB, partyC, server,
     return embeddings
 
 
-def run_vflip_defense(partyA,partyB,partyC,HA, HB, HC, server,
-                      XA, XB, XC, edge_index, y,
+# import torch
+# from .vflip_defense import VFLIPDefense
+# from utils.metrics import accuracy  # assuming you have this
+
+
+def get_party_splits(partyA, partyB, partyC):
+    """
+    Determine the start/end indices of each party's embedding.
+    Assumes each party outputs a 1D vector per node.
+    """
+    # Get output dimensions (forward once to know shape)
+    with torch.no_grad():
+        dummy_x = torch.randn(1, partyA.in_channels)  # adjust if needed
+        dummy_edge = torch.tensor([[0], [0]])
+        hA = partyA(dummy_x, dummy_edge)
+        hB = partyB(dummy_x, dummy_edge)
+        hC = partyC(dummy_x, dummy_edge)
+    dimA = hA.shape[1]
+    dimB = hB.shape[1]
+    dimC = hC.shape[1]
+    splits = [(0, dimA), (dimA, dimA+dimB), (dimA+dimB, dimA+dimB+dimC)]
+    return splits
+
+
+def get_party_splits_from_embeddings(HA, HB, HC):
+    """
+    Determine the start/end indices of each party's embedding from the given tensors.
+    HA, HB, HC are 2D tensors of shape (num_nodes, embedding_dim_party).
+    """
+    dimA = HA.shape[1]
+    dimB = HB.shape[1]
+    dimC = HC.shape[1]
+    splits = [(0, dimA), (dimA, dimA+dimB), (dimA+dimB, dimA+dimB+dimC)]
+    return splits
+
+
+def run_vflip_defense(partyA, partyB, partyC, server,
+                      HA, HB, HC,XA,XB,XC, edge_index, y,
                       train_mask, test_mask,
-                      threshold=2.0,
-                      mae_epochs=20,
+                      threshold_percentile=95.0,
+                      mae_epochs=20, lr1=0.01, lr2=0.01,
                       device='cpu'):
     """
-    Run complete VFLIP defense pipeline.
-    
-    Args:
-        partyA, partyB, partyC: Trained local party models
-        server: Trained server model
-        XA, XB, XC: Feature matrices
-        edge_index: Graph edge index
-        y: Labels
-        train_mask: Training set mask
-        test_mask: Test set mask
-        threshold: Anomaly score threshold for detection
-        mae_epochs: MAE training epochs
-        device: Computation device
-        
-    Returns:
-        metrics: Dictionary containing defense metrics
+    VFLIP defense pipeline using precomputed embeddings HA, HB, HC.
+    The partyA, partyB, partyC arguments are kept for compatibility but NOT used.
     """
-    
     print("\n" + "="*60)
-    print("VFLIP DEFENSE PIPELINE")
+    print("VFLIP DEFENSE PIPELINE (Paper‑correct, using HA, HB, HC)")
     print("="*60)
-    
-    # Move data to device
-    XA = XA.to(device)
-    XB = XB.to(device)
-    XC = XC.to(device)
-    edge_index = edge_index.to(device)
+
+    # Move all tensors to device
+    HA = HA.to(device)
+    HB = HB.to(device)
+    HC = HC.to(device)
     y = y.to(device)
     train_mask = train_mask.to(device)
     test_mask = test_mask.to(device)
-    
+    # edge_index is not used because we use precomputed embeddings, but kept for signature
+
+    # Derive party splits from the embedding tensors
+    party_splits = get_party_splits_from_embeddings(HA, HB, HC)
+    print(f"Party splits (start, end): {party_splits}")
+
+    # Concatenate embeddings
+    all_embeddings = torch.cat([HA, HB, HC], dim=1)  # (num_nodes, total_dim)
+
+    # Split into clean training set and test set
+    clean_embeddings = all_embeddings[train_mask]
+    test_embeddings = all_embeddings[test_mask]
+    test_labels = y[test_mask]
+
+    print(f"Clean embeddings for MAE training: {clean_embeddings.shape}")
+    print(f"Test embeddings: {test_embeddings.shape}")
+
     # Initialize VFLIP defense
-    print(f"\nInitializing VFLIP Defense:")
-    # Get embedding dimension from the trained models
-    embedding_dim = partyA.gat2.out_channels + partyB.gat2.out_channels + partyC.gat2.out_channels
-    print(f"  Embedding dimension: {embedding_dim}")
-    print(f"  Anomaly threshold: {threshold}")
-    print(f"  MAE training epochs: {mae_epochs}")
-    
     vflip = VFLIPDefense(
-        embedding_dim=embedding_dim,
-        threshold=threshold,
-        dropout=0.1,
+        party_splits=party_splits,
+        threshold_percentile=threshold_percentile,
         device=device
     )
-    
-    # Phase 1: Train MAE on clean embeddings
-    print("\n" + "-"*60)
-    print("Phase 1: Training MAE on clean embeddings")
-    print("-"*60)
 
-    embeddings = torch.cat([HA, HB, HC], dim=1)
-    clean_embeddings = embeddings[train_mask]
-    
-    # clean_embeddings = collect_embeddings_on_clean_data(
-    #     partyA, partyB, partyC, server,
-    #     XA, XB, XC, edge_index,
-    #     train_mask, device
-    # )
-    
-    print(f"Clean embeddings shape: {clean_embeddings.shape}")
-    
+    # Train MAE on clean embeddings and set thresholds
     vflip.train_mae_on_clean_embeddings(
-        clean_embeddings,
-        epochs=mae_epochs,
-        lr=0.01
+        clean_embeddings, epochs=mae_epochs, lr1=lr1, lr2=lr2
     )
-    
-    # Phase 2: Evaluate on test set
-    print("\n" + "-"*60)
-    print("Phase 2: Test set defense evaluation")
-    print("-"*60)
-    
-    # test_embeddings = collect_all_embeddings(
-    #     partyA, partyB, partyC, server,
-    #     XA, XB, XC, edge_index, device
-    # )
-    
-    test_embeddings_subset = embeddings[test_mask]
-    
-    # Apply defense
-    defended_embeddings, anomaly_scores, detected_mask = vflip.defend_on_batch(
-        test_embeddings_subset
-    )
-    
-    print(f"Detected anomalies: {detected_mask.sum().item()} / {len(test_mask.nonzero())} samples")
-    print(f"Anomaly score range: [{anomaly_scores.min():.4f}, {anomaly_scores.max():.4f}]")
-    
-    # Evaluate performance on defended embeddings
+
+    # Apply defense on test set
+    defended_embeddings, malicious_mask = vflip.defend_on_batch(test_embeddings)
+
+    # Evaluate using server model
+    server.eval()
     with torch.no_grad():
-        # Original (potentially attacked) predictions
-        logits_original = server(test_embeddings_subset)
-        
-        # Defended predictions
+        logits_original = server(test_embeddings)
         logits_defended = server(defended_embeddings)
-    
-    # Compute metrics
-    labels_test = y[test_mask]
-    
-    clean_acc_original = accuracy(logits_original, labels_test)
-    clean_acc_defended = accuracy(logits_defended, labels_test)
-    
-    print(f"\nCleanliness metrics:")
-    print(f"  Accuracy (original): {clean_acc_original:.4f}")
-    print(f"  Accuracy (defended): {clean_acc_defended:.4f}")
-    print(f"  Accuracy difference: {clean_acc_original - clean_acc_defended:.4f}")
-    
-    # Prepare metrics dictionary
+
+    # Compute accuracy (assuming you have an accuracy function)
+    from utils.metrics import accuracy  # or define a simple one
+    acc_original = accuracy(logits_original, test_labels)
+    acc_defended = accuracy(logits_defended, test_labels)
+
+    print(f"\nResults on test set:")
+    print(f"  Accuracy (original): {acc_original:.4f}")
+    print(f"  Accuracy (defended): {acc_defended:.4f}")
+    print(f"  Accuracy change: {acc_defended - acc_original:.4f}")
+
+    # Additional statistics
+    total_malicious = malicious_mask.sum(dim=1).float()
+    print(f"  Avg number of parties flagged as malicious per sample: {total_malicious.mean():.2f}")
+
     metrics = {
-        'embedding_dim': embedding_dim,
-        'threshold': threshold,
-        'clean_embeddings_count': len(clean_embeddings),
-        'test_embeddings_count': len(test_embeddings_subset),
-        'detected_anomalies': detected_mask.sum().item(),
-        'detection_rate': detected_mask.sum().float() / len(detected_mask),
-        'anomaly_score_mean': anomaly_scores.mean().item(),
-        'anomaly_score_std': anomaly_scores.std().item(),
-        'clean_acc_original': clean_acc_original,
-        'clean_acc_defended': clean_acc_defended,
-        'anomaly_scores': anomaly_scores.cpu().numpy(),
-        'detected_mask': detected_mask.cpu().numpy(),
+        'acc_original': acc_original,
+        'acc_defended': acc_defended,
+        'malicious_mask': malicious_mask.cpu().numpy(),
+        'party_splits': party_splits,
+        'thresholds': vflip.thresholds
     }
-    
     return vflip, defended_embeddings, metrics
 
 
