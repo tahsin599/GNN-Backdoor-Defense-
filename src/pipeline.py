@@ -364,11 +364,11 @@ def run_pipeline(
         clean_acc = accuracy(logits_clean[test_mask], y[test_mask])
         print(f"\nClean Accuracy: {clean_acc:.4f}")
 
-        # Attack Evaluation - Apply trigger to test nodes
-        test_nodes = test_mask.nonzero(as_tuple=False).view(-1)
-        XA_triggered = backdoor_attack.apply_trigger(XA, test_nodes)
+        # Attack Evaluation - Apply trigger to ALL nodes (train+test)
+        all_nodes = torch.arange(XA.size(0), device=device)  # ← CHANGE HERE
+        XA_triggered = backdoor_attack.apply_trigger(XA, all_nodes)  # ← CHANGE HERE
         
-        HA_attack = partyA(XA_triggered, edge_index)
+        HA_attack = partyA(XA_triggered, edge_index)  # Now has ALL nodes triggered
         HB_attack = partyB(XB, edge_index)
         HC_attack = partyC(XC, edge_index)
         H_attack = torch.cat([HA_attack, HB_attack, HC_attack], dim=1)
@@ -430,101 +430,3 @@ def run_pipeline(
     return baseline_acc, clean_acc, attack_acc, asr, best_trigger,HA_attack,HB_attack,HC_attack
 
 
-def run_vflip_defense_pipeline(
-    partyA, partyB, partyC, server,
-    XA, XB, XC, edge_index, y,
-    train_mask, test_mask,
-    threshold=-1.0,
-    mae_epochs=600,
-    device="cpu"
-):
-    """
-    Apply VFLIP defense against trained backdoored models
-    
-    Returns dict with defense metrics and results
-    """
-    from defense.vflip.defense_pipeline import run_vflip_defense
-    
-    # Move data to device
-    XA = XA.to(device)
-    XB = XB.to(device)
-    XC = XC.to(device)
-    edge_index = edge_index.to(device)
-    y = y.to(device)
-    train_mask = train_mask.to(device)
-    test_mask = test_mask.to(device)
-    
-    # Run VFLIP Defense
-    vflip, defended_embeddings, defense_metrics = run_vflip_defense(
-        partyA=partyA,
-        partyB=partyB,
-        partyC=partyC,
-        server=server,
-        XA=XA,
-        XB=XB,
-        XC=XC,
-        edge_index=edge_index,
-        y=y,
-        train_mask=train_mask,
-        test_mask=test_mask,
-        threshold=threshold,
-        mae_epochs=mae_epochs,
-        device=device
-    )
-    
-    print(f"\n🛡️ VFLIP Defense Applied Successfully")
-    
-    # Evaluate defense effectiveness
-    partyA.eval()
-    partyB.eval()
-    partyC.eval()
-    server.eval()
-    
-    with torch.no_grad():
-        # Get anomaly detection results
-        detected_mask, anomaly_scores = vflip.detect_anomalies(defended_embeddings)
-        num_detected = detected_mask.sum().item()
-        detection_rate = num_detected / len(detected_mask)
-        
-        # Compute defended accuracy
-        test_outputs_defended = server(defended_embeddings)
-        defended_predictions_all = test_outputs_defended.argmax(dim=1)
-        test_labels = y[test_mask]
-        defended_accuracy = (defended_predictions_all == test_labels).sum().item() / len(test_labels)
-        
-        # Compute original (attacked) ASR
-        hA_all = partyA(XA, edge_index)
-        hB_all = partyB(XB, edge_index)
-        hC_all = partyC(XC, edge_index)
-        all_embeddings_original = torch.cat([hA_all, hB_all, hC_all], dim=1)
-        original_test_embeddings = all_embeddings_original[test_mask]
-        
-        original_outputs = server(original_test_embeddings)
-        original_predictions = original_outputs.argmax(dim=1)
-        num_triggered_original = (original_predictions == 0).sum().item()
-        asr_original = num_triggered_original / len(original_test_embeddings)
-        
-        # Compute defended ASR
-        defended_outputs = server(defended_embeddings)
-        defended_predictions = defended_outputs.argmax(dim=1)
-        
-        # For detected anomalies, force non-backdoor prediction
-        for i in range(len(detected_mask)):
-            if detected_mask[i]:
-                defended_outputs[i, 0] = defended_outputs[i].min() - 10
-                defended_predictions[i] = defended_outputs[i].argmax()
-        
-        num_triggered_defended = (defended_predictions == 0).sum().item()
-        asr_with_defense = num_triggered_defended / len(defended_embeddings)
-    
-    results = {
-        'vflip': vflip,
-        'defended_embeddings': defended_embeddings,
-        'detection_rate': detection_rate,
-        'defended_accuracy': defended_accuracy,
-        'asr_original': asr_original,
-        'asr_with_defense': asr_with_defense,
-        'defense_metrics': defense_metrics
-    }
-    
-    return results

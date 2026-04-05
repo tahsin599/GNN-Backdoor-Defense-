@@ -90,7 +90,7 @@ class VFLIPDefense:
                     is_anomaly = s_j_to_i > self.thresholds[i]
                     votes[is_anomaly, i] += 1
 
-        malicious_mask = votes > (n // 2)
+        malicious_mask = votes > (n / 2)
         return malicious_mask
 
     def purify_embeddings(self, h, malicious_mask):
