@@ -84,7 +84,7 @@ class MaskedAutoencoder(nn.Module):
         for epoch in range(epochs):
             perm = torch.randperm(clean_embeddings.size(0))
             embeddings_shuffled = clean_embeddings[perm]
-            batch = embeddings_shuffled  # full batch for simplicity
+            batch = embeddings_shuffled 
 
             # ---- N-1 to 1 ----
             optimizer1.zero_grad()
