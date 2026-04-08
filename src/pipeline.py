@@ -365,8 +365,9 @@ def run_pipeline(
         print(f"\nClean Accuracy: {clean_acc:.4f}")
 
         # Attack Evaluation - Apply trigger to ALL nodes (train+test)
+        test_nodes = test_mask.nonzero(as_tuple=False).view(-1)
         all_nodes = torch.arange(XA.size(0), device=device)  # ← CHANGE HERE
-        XA_triggered = backdoor_attack.apply_trigger(XA, all_nodes)  # ← CHANGE HERE
+        XA_triggered = backdoor_attack.apply_trigger(XA, test_nodes)  # ← CHANGE HERE
         
         HA_attack = partyA(XA_triggered, edge_index)  # Now has ALL nodes triggered
         HB_attack = partyB(XB, edge_index)

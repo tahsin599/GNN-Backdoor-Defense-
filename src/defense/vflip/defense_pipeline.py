@@ -25,17 +25,6 @@ def collect_embeddings_on_clean_data(partyA, partyB, partyC, server,
                                       XA, XB, XC, edge_index, mask, device='cpu'):
     """
     Collect embeddings from clean data for MAE training.
-    
-    Args:
-        partyA, partyB, partyC: Local party models
-        server: Server model
-        XA, XB, XC: Feature matrices for each party
-        edge_index: Graph edge index
-        mask: Mask for selecting data
-        device: Computation device
-        
-    Returns:
-        embeddings: Concatenated embeddings from all parties (n_clean, embedding_dim)
     """
     partyA.eval()
     partyB.eval()
@@ -46,10 +35,7 @@ def collect_embeddings_on_clean_data(partyA, partyB, partyC, server,
         hB = partyB(XB, edge_index)
         hC = partyC(XC, edge_index)
         
-        # Concatenate embeddings
         embeddings = torch.cat([hA, hB, hC], dim=1)
-        
-        # Select only clean data
         clean_embeddings = embeddings[mask]
     
     return clean_embeddings
@@ -59,16 +45,6 @@ def collect_all_embeddings(partyA, partyB, partyC, server,
                            XA, XB, XC, edge_index, device='cpu'):
     """
     Collect all embeddings for defense.
-    
-    Args:
-        partyA, partyB, partyC: Local party models
-        server: Server model
-        XA, XB, XC: Feature matrices for each party
-        edge_index: Graph edge index
-        device: Computation device
-        
-    Returns:
-        embeddings: All concatenated embeddings
     """
     partyA.eval()
     partyB.eval()
@@ -83,19 +59,12 @@ def collect_all_embeddings(partyA, partyB, partyC, server,
     return embeddings
 
 
-# import torch
-# from .vflip_defense import VFLIPDefense
-# from utils.metrics import accuracy  # assuming you have this
-
-
 def get_party_splits(partyA, partyB, partyC):
     """
     Determine the start/end indices of each party's embedding.
-    Assumes each party outputs a 1D vector per node.
     """
-    # Get output dimensions (forward once to know shape)
     with torch.no_grad():
-        dummy_x = torch.randn(1, partyA.in_channels)  # adjust if needed
+        dummy_x = torch.randn(1, partyA.in_channels)
         dummy_edge = torch.tensor([[0], [0]])
         hA = partyA(dummy_x, dummy_edge)
         hB = partyB(dummy_x, dummy_edge)
@@ -110,7 +79,6 @@ def get_party_splits(partyA, partyB, partyC):
 def get_party_splits_from_embeddings(HA, HB, HC):
     """
     Determine the start/end indices of each party's embedding from the given tensors.
-    HA, HB, HC are 2D tensors of shape (num_nodes, embedding_dim_party).
     """
     dimA = HA.shape[1]
     dimB = HB.shape[1]
@@ -120,17 +88,19 @@ def get_party_splits_from_embeddings(HA, HB, HC):
 
 
 def run_vflip_defense(partyA, partyB, partyC, server,
-                      HA, HB, HC,XA,XB,XC, edge_index, y,
+                      HA, HB, HC, XA, XB, XC, edge_index, y,
                       train_mask, test_mask,
                       threshold_percentile=95.0,
                       mae_epochs=20, lr1=0.01, lr2=0.01,
-                      device='cpu'):
+                      device='cpu',
+                      use_weighted_voting=True):  # NEW: enable weighted voting
     """
     VFLIP defense pipeline using precomputed embeddings HA, HB, HC.
-    The partyA, partyB, partyC arguments are kept for compatibility but NOT used.
     """
     print("\n" + "="*60)
     print("VFLIP DEFENSE PIPELINE (Paper‑correct, using HA, HB, HC)")
+    if use_weighted_voting:
+        print("  + Weighted Voting Enhancement (reliability-based)")
     print("="*60)
 
     # Move all tensors to device
@@ -140,14 +110,13 @@ def run_vflip_defense(partyA, partyB, partyC, server,
     y = y.to(device)
     train_mask = train_mask.to(device)
     test_mask = test_mask.to(device)
-    # edge_index is not used because we use precomputed embeddings, but kept for signature
 
     # Derive party splits from the embedding tensors
     party_splits = get_party_splits_from_embeddings(HA, HB, HC)
     print(f"Party splits (start, end): {party_splits}")
 
     # Concatenate embeddings
-    all_embeddings = torch.cat([HA, HB, HC], dim=1)  # (num_nodes, total_dim)
+    all_embeddings = torch.cat([HA, HB, HC], dim=1)
 
     # Split into clean training set and test set
     clean_embeddings = all_embeddings[train_mask]
@@ -161,7 +130,8 @@ def run_vflip_defense(partyA, partyB, partyC, server,
     vflip = VFLIPDefense(
         party_splits=party_splits,
         threshold_percentile=threshold_percentile,
-        device=device
+        device=device,
+        use_weighted_voting=use_weighted_voting  # NEW
     )
 
     # Train MAE on clean embeddings and set thresholds
@@ -178,8 +148,7 @@ def run_vflip_defense(partyA, partyB, partyC, server,
         logits_original = server(test_embeddings)
         logits_defended = server(defended_embeddings)
 
-    # Compute accuracy (assuming you have an accuracy function)
-    from utils.metrics import accuracy  # or define a simple one
+    from utils.metrics import accuracy
     acc_original = accuracy(logits_original, test_labels)
     acc_defended = accuracy(logits_defended, test_labels)
 
@@ -188,7 +157,6 @@ def run_vflip_defense(partyA, partyB, partyC, server,
     print(f"  Accuracy (defended): {acc_defended:.4f}")
     print(f"  Accuracy change: {acc_defended - acc_original:.4f}")
 
-    # Additional statistics
     total_malicious = malicious_mask.sum(dim=1).float()
     print(f"  Avg number of parties flagged as malicious per sample: {total_malicious.mean():.2f}")
 
@@ -197,7 +165,8 @@ def run_vflip_defense(partyA, partyB, partyC, server,
         'acc_defended': acc_defended,
         'malicious_mask': malicious_mask.cpu().numpy(),
         'party_splits': party_splits,
-        'thresholds': vflip.thresholds
+        'thresholds': vflip.thresholds,
+        'party_weights': vflip.party_weights.cpu().numpy() if vflip.party_weights is not None else None,
     }
     return vflip, defended_embeddings, metrics
 
@@ -208,23 +177,7 @@ def evaluate_vflip_defense(vflip, partyA, partyB, partyC, server,
                            device='cpu'):
     """
     Evaluate VFLIP defense performance.
-    
-    Args:
-        vflip: Trained VFLIP defense
-        partyA, partyB, partyC: Party models
-        server: Server model
-        XA, XB, XC: Feature matrices
-        edge_index: Graph edge index
-        y: Labels
-        test_mask: Test mask
-        poisoned_nodes: Indices of poisoned nodes (for evaluation)
-        device: Computation device
-        
-    Returns:
-        results: Evaluation results
     """
-    
-    # Collect test embeddings
     test_embeddings = collect_all_embeddings(
         partyA, partyB, partyC, server,
         XA, XB, XC, edge_index, device
@@ -232,10 +185,7 @@ def evaluate_vflip_defense(vflip, partyA, partyB, partyC, server,
     
     test_embeddings_subset = test_embeddings[test_mask]
     
-    # Detect anomalies
     detected_mask, anomaly_scores = vflip.detect_anomalies(test_embeddings_subset)
-    
-    # Purify embeddings
     purified_embeddings = vflip.purify_embeddings(test_embeddings_subset)
     
     results = {
@@ -244,7 +194,6 @@ def evaluate_vflip_defense(vflip, partyA, partyB, partyC, server,
         'purified_embeddings': purified_embeddings.cpu().numpy(),
     }
     
-    # If ground truth poison mask is available, compute detection metrics
     if poisoned_nodes is not None:
         test_indices = test_mask.nonzero(as_tuple=False).view(-1)
         test_poisoned_mask = torch.zeros(len(test_indices), dtype=torch.bool, device=device)
@@ -258,15 +207,8 @@ def evaluate_vflip_defense(vflip, partyA, partyB, partyC, server,
         tn = (~detected_mask & ~test_poisoned_mask).sum().float()
         fn = (~detected_mask & test_poisoned_mask).sum().float()
         
-        if (tp + fn) > 0:
-            tpr = tp / (tp + fn)
-        else:
-            tpr = 0.0
-        
-        if (fp + tn) > 0:
-            fpr = fp / (fp + tn)
-        else:
-            fpr = 0.0
+        tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        fpr = fp / (fp + tn) if (fp + tn) > 0 else 0.0
         
         results['true_positive_rate'] = tpr.item()
         results['false_positive_rate'] = fpr.item()

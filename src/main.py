@@ -80,6 +80,7 @@ def main(mode='balanced', include_defense=True):
     print("\n" + "="*80)
     print("PHASE 1: BVG BACKDOOR ATTACK (WITHOUT DEFENSE)")
     print("="*80)
+    target_class=0
     
     # Select attack mode
     if mode == 'balanced':
@@ -136,7 +137,7 @@ def main(mode='balanced', include_defense=True):
         y=y,
         train_mask=train_mask,
         test_mask=test_mask,
-        target_class=0,
+        target_class=1,
         poison_ratio=attack_config['poison_ratio'],
         epsilon=attack_config['epsilon'],
         alpha=attack_config['alpha'],
@@ -196,7 +197,7 @@ def main(mode='balanced', include_defense=True):
             y=y,
             train_mask=train_mask,
             test_mask=test_mask,
-            threshold_percentile=95.0,
+            threshold_percentile=90.0,
             mae_epochs=600,
             lr1=0.01,
             lr2=0.01,
@@ -217,6 +218,43 @@ def main(mode='balanced', include_defense=True):
         with torch.no_grad():
             all_embeddings_original = torch.cat([HA_Attack, HB_Attack, HC_Attack], dim=1)
             original_test_embeddings = all_embeddings_original[test_mask]
+    
+    #         malicious_mask = vflip.identify_malicious_parties(original_test_embeddings)
+    # # A sample is considered "detected" if at least one party is malicious
+    # detected_mask = malicious_mask.sum(dim=1) > 0
+    # detection_rate = detected_mask.float().mean().item()
+    # num_detected = detected_mask.sum().item()
+    
+    # with torch.no_grad():
+    #     # Get original logits from server (top model)
+    #     original_logits = server(original_test_embeddings)  # Shape: [batch_size, num_classes]
+    #     original_predictions = original_logits.argmax(dim=1)
+        
+    #     # === DIRECT LOGIT MANIPULATION ===
+    #     defended_logits = original_logits.clone()
+        
+    #     # Subtract 10 from class 1 logit for detected samples
+    #     # Class 1 is the target/backdoor label
+    #     defended_logits[detected_mask, 1] -= 10  # Subtract 10 from logit of class 1
+        
+    #     # Now get predictions from manipulated logits
+    #     defended_predictions = defended_logits.argmax(dim=1)
+        
+    #     # Original ASR (before defense)
+    #     num_triggered_original = (original_predictions == 1).sum().item()
+    #     asr_original = num_triggered_original / len(original_test_embeddings)
+        
+    #     # ASR after defense (logit manipulation)
+    #     num_triggered_defended = (defended_predictions == 1).sum().item()
+    #     asr_with_defense = num_triggered_defended / len(defended_embeddings)
+        
+    #     # Clean accuracy on defended embeddings
+    #     test_labels = y[test_mask]
+    #     defended_accuracy = (defended_predictions == test_labels).sum().item() / len(test_labels)
+        
+    #     # ASR reduction metrics
+    #     asr_reduction = asr_original - asr_with_defense
+    #     asr_reduction_pct = (asr_reduction / asr_original * 100) if asr_original > 0 else 0
         
         # Use VFLIP to identify malicious parties on the original test embeddings
         malicious_mask = vflip.identify_malicious_parties(original_test_embeddings)
@@ -229,13 +267,13 @@ def main(mode='balanced', include_defense=True):
         with torch.no_grad():
             original_outputs = server(original_test_embeddings)
             original_predictions = original_outputs.argmax(dim=1)
-            num_triggered_original = (original_predictions == 0).sum().item()
+            num_triggered_original = (original_predictions == target_class).sum().item()
             asr_original = num_triggered_original / len(original_test_embeddings)
             
             # Compute ASR after defense (on purified embeddings)
             defended_outputs = server(defended_embeddings)
             defended_predictions = defended_outputs.argmax(dim=1)
-            num_triggered_defended = (defended_predictions == 0).sum().item()
+            num_triggered_defended = (defended_predictions == target_class).sum().item()
             asr_with_defense = num_triggered_defended / len(defended_embeddings)
             
             # Compute clean accuracy on defended embeddings
@@ -253,7 +291,7 @@ def main(mode='balanced', include_defense=True):
         print("-"*90)
         print(f"{'Baseline Accuracy':<30} | {baseline_acc*100:>19.2f}% | {'-':>20} | {'-':>15}")
         print(f"{'Attack Success Rate (ASR)':<30} | {asr_original*100:>19.2f}% | {asr_with_defense*100:>19.2f}% | {-asr_reduction*100:>14.2f}pp")
-        print(f"{'Clean Accuracy (test)':<30} | {clean_acc_attack*100:>19.2f}% | {defended_accuracy*100:>19.2f}% | {(defended_accuracy - clean_acc_attack)*100:>14.2f}pp")
+        print(f"{'Clean Accuracy (test)':<30} | {'-':>20} | {defended_accuracy*100:>19.2f}% | {'-':>15}")
         print(f"{'Detected Anomalies (samples)':<30} | {'-':>20} | {detection_rate*100:>19.1f}% | {'-':>15}")
         print("="*90)
         print(f"\nNote: ASR change of {-asr_reduction*100:.2f}pp represents a {asr_reduction_pct:.1f}% relative reduction")
@@ -529,4 +567,4 @@ def main2(mode='balanced', include_defense=True):
 
 if __name__ == "__main__":
     # Run aggressive attack with defense
-    main2(mode='aggressive', include_defense=True)
+    main(mode='aggressive', include_defense=True)
