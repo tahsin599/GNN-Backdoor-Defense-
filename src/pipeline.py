@@ -7,7 +7,7 @@ def run_pipeline(
     partyA, partyB, partyC, server,
     XA, XB, XC, edge_index, y,
     train_mask, test_mask,
-    target_class=1,
+    target_class=0,
     poison_ratio=0.05,
     epsilon=1.0,
     alpha=0.1,
@@ -24,6 +24,8 @@ def run_pipeline(
     y = y.to(device)
     train_mask = train_mask.to(device)
     test_mask = test_mask.to(device)
+    #ADJUST TARGET CLASS
+    target_class= 1-target_class
     
     # =====================================================
     # 1. BASELINE TRAINING (CLEAN)
