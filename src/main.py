@@ -197,7 +197,7 @@ def main(mode='balanced', include_defense=True):
             y=y,
             train_mask=train_mask,
             test_mask=test_mask,
-            threshold_percentile=95.0,
+            threshold_percentile=90.0,
             mae_epochs=600,
             lr1=0.01,
             lr2=0.01,
